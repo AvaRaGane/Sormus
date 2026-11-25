@@ -135,9 +135,11 @@
       }
     }
 
-    function handleNotification(event) {
+        function handleNotification(event) {
       const data = new Uint8Array(event.target.value.buffer);
-      // 0x69 = Real-time reading response, byte 1 = 0x03 (SpO2), byte 2 = status (0=OK), byte 3 = value
+      const hex = Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      addLog(`RAW: ${hex}`);
+
       if (data[0] === 0x69 && data[1] === 0x03 && isMeasuring) {
         const val = data[3];
         if (val >= 50 && val <= 100) {
@@ -146,6 +148,7 @@
         }
       }
     }
+
 
     async function connectRing() {
       try {

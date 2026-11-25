@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Colmi R12 SpO2 Logger</title>
+  <style>
+    body {
+      background-color: #0d0d0d;
+      color: #e0e0e0;
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1 { font-size: 1.4rem; color: #ff5252; margin-top: 0; }
+    .card {
+      background: #1a1a1a;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    button {
+      background: #2e7d32;
+      color: white;
+      border: none;
+      padding: 14px 18px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: bold;
+      width: 100%;
+      margin-bottom: 10px;
+      cursor: pointer;
+    }
+    button:disabled { background: #444; color: #888; cursor: not-allowed; }
+    button.secondary { background: #1976d2; }
+    button.danger { background: #c62828; }
+    .row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+    input[type="number"] {
+      background: #2a2a2a;
+      color: white;
+      border: 1px solid #444;
+      padding: 10px;
+      border-radius: 6px;
+      width: 80px;
+      font-size: 1rem;
+    }
+    #status { font-weight: bold; color: #ffd54f; margin-bottom: 10px; }
+    #log {
+      background: #000;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px;
+      height: 220px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Colmi R12 – SpO2-yöseuranta</h1>
+
+  <div class="card">
+    <div id="status">Tila: Ei yhdistetty</div>
+    <button id="btnConnect">1. Yhdistä sormukseen</button>
+
+    <div class="row">
+      <label for="intervalMin">Mittausväli (min):</label>
+      <input type="number" id="intervalMin" value="5" min="1" max="60">
+    </div>
+
+    <button id="btnTest" class="secondary" disabled>Mittaa SpO2 nyt (testi)</button>
+    <button id="btnStart" disabled>2. Aloita automaattinen seuranta</button>
+    <button id="btnStop" class="danger" disabled>Lopeta seuranta</button>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnCsv" class="secondary" style="margin-bottom:0;">Lataa CSV</button>
+      <button id="btnClear" class="danger" style="margin-bottom:0; width: 40%;">Tyhjennä</button>
+    </div>
+  </div>
+
+  <div id="log"></div>
+
+  <script>
+    const SERVICE_UUID = '6e40fff0-b5a3-f393-e0a9-e50e24dcca9e';
+    const WRITE_UUID   = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+    const NOTIFY_UUID  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+    let device = null;
+    let writeChar = null;
+    let notifyChar = null;
+    let timerId = null;
+    let wakeLock = null;
+    let currentReadings = [];
+    let isMeasuring = false;
+
+    let logs = JSON.parse(localStorage.getItem('colmi_spo2_logs') || '[]');
+
+    const elStatus = document.getElementById('status');
+    const elLog = document.getElementById('log');
+    const btnConnect = document.getElementById('btnConnect');
+    const btnTest = document.getElementById('btnTest');
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+
+    function addLog(msg) {
+      const time = new Date().toLocaleTimeString('fi-FI');
+      elLog.textContent = `[${time}] ${msg}\n` + elLog.textContent;
+    }
+
+    function makePacket(cmd, payload = []) {
+      const pkt = new Uint8Array(16);
+      pkt[0] = cmd;
+      for (let i = 0; i < payload.length && i < 14; i++) {
+        pkt[i + 1] = payload[i];
+      }
+      let sum = 0;
+      for (let i = 0; i < 15; i++) sum += pkt[i];
+      pkt[15] = sum & 0xFF;
+      return pkt;
+    }
+
+    async function requestWakeLock() {
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          addLog('Näytön lukitus (Wake Lock) aktivoitu.');
+        } catch (e) {
+          addLog('Wake Lock ei onnistunut: ' + e.message);
+        }
+      }
+    }
+
+    function handleNotification(event) {
+      const data = new Uint8Array(event.target.value.buffer);
+      // 0x69 = Real-time reading response, byte 1 = 0x03 (SpO2), byte 2 = status (0=OK), byte 3 = value
+      if (data[0] === 0x69 && data[1] === 0x03 && isMeasuring) {
+        const val = data[3];
+        if (val >= 50 && val <= 100) {
+          currentReadings.push(val);
+          addLog(`  -> Lukema: ${val}%`);
+        }
+      }
+    }
+
+    async function connectRing() {
+      try {
+        elStatus.textContent = 'Tila: Etsitään sormusta...';
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'R02' }, { namePrefix: 'R12' }, { namePrefix: 'COLMI' }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        device.addEventListener('gattserverdisconnected', () => {
+          elStatus.textContent = 'Tila: Yhteys katkesi!';
+          addLog('Bluetooth-yhteys katkesi.');
+          btnTest.disabled = true;
+        });
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        writeChar = await service.getCharacteristic(WRITE_UUID);
+        notifyChar = await service.getCharacteristic(NOTIFY_UUID);
+
+        await notifyChar.startNotifications();
+        notifyChar.addEventListener('characteristicvaluechanged', handleNotification);
+
+        elStatus.textContent = `Tila: Yhdistetty (${device.name})`;
+        addLog(`Yhdistetty laitteeseen ${device.name}`);
+        btnTest.disabled = false;
+        btnStart.disabled = false;
+      } catch (err) {
+        elStatus.textContent = 'Tila: Yhdistys epäonnistui';
+        addLog('Virhe: ' + err.message);
+      }
+    }
+
+    async function measureOnce() {
+      if (!device || !device.gatt.connected) {
+        addLog('Yhteys poikki, yritetään yhdistää uudelleen...');
+        try {
+          const server = await device.gatt.connect();
+          const service = await server.getPrimaryService(SERVICE_UUID);
+          writeChar = await service.getCharacteristic(WRITE_UUID);
+          notifyChar = await service.getCharacteristic(NOTIFY_UUID);
+          await notifyChar.startNotifications();
+          notifyChar.addEventListener('characteristicvaluechanged', handleNotification);
+          elStatus.textContent = `Tila: Yhdistetty (${device.name})`;
+        } catch (e) {
+          addLog('Uudelleenyhdistys epäonnistui: ' + e.message);
+          return;
+        }
+      }
+
+      if (isMeasuring) return;
+      isMeasuring = true;
+      currentReadings = [];
+      addLog('Aloitetaan SpO2-mittaus (pidä käsi paikoillaan n. 25 s)...');
+
+      try {
+        // Käynnistä SpO2 (0x69, tyyppi 0x03, start 0x01)
+        await writeChar.writeValue(makePacket(0x69, [0x03, 0x01]));
+
+        // Odotetaan 25 sekuntia lukemia
+        await new Promise(r => setTimeout(r, 25000));
+
+        // Lopeta SpO2 (0x6A, tyyppi 0x03, 0x00)
+        await writeChar.writeValue(makePacket(0x6A, [0x03, 0x00]));
+      } catch (e) {
+        addLog('Mittausvirhe: ' + e.message);
+      }
+
+      isMeasuring = false;
+      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+      if (currentReadings.length > 0) {
+        const sorted = [...currentReadings].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        const median = sorted.length % 2 !== 0 ? sorted[mid] : ((sorted[mid - 1] + sorted[mid]) / 2).toFixed(1);
+
+        logs.push({ timestamp, median, raw: currentReadings.join(';') });
+        localStorage.setItem('colmi_spo2_logs', JSON.stringify(logs));
+        addLog(`TALLENNETTU: SpO2 mediaani ${median}% (${currentReadings.length} lukemaa)`);
+      } else {
+        logs.push({ timestamp, median: '', raw: 'NO_DATA' });
+        localStorage.setItem('colmi_spo2_logs', JSON.stringify(logs));
+        addLog('Ei kelvollisia SpO2-lukemia tällä kierroksella.');
+      }
+    }
+
+    btnConnect.addEventListener('click', connectRing);
+    btnTest.addEventListener('click', measureOnce);
+
+    btnStart.addEventListener('click', async () => {
+      const mins = parseInt(document.getElementById('intervalMin').value, 10) || 5;
+      await requestWakeLock();
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+      addLog(`Automaattinen seuranta käynnistetty (${mins} min välein).`);
+      measureOnce();
+      timerId = setInterval(measureOnce, mins * 60 * 1000);
+    });
+
+    btnStop.addEventListener('click', () => {
+      if (timerId) clearInterval(timerId);
+      timerId = null;
+      if (wakeLock) { wakeLock.release(); wakeLock = null; }
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+      addLog('Seuranta lopetettu.');
+    });
+
+    document.getElementById('btnCsv').addEventListener('click', () => {
+      if (logs.length === 0) { alert('Ei tallennettua dataa.'); return; }
+      let csv = 'timestamp,spo2_median,raw_readings\n';
+      logs.forEach(r => { csv += `${r.timestamp},${r.median},${r.raw}\n`; });
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `colmi_spo2_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+    });
+
+    document.getElementById('btnClear').addEventListener('click', () => {
+      if (confirm('Tyhjennetäänkö kaikki tallennetut mittaukset?')) {
+        logs = [];
+        localStorage.removeItem('colmi_spo2_logs');
+        elLog.textContent = '';
+        addLog('Historia tyhjennetty.');
+      }
+    });
+
+    addLog(`Valmis. Muistissa ${logs.length} aiempaa mittausta.`);
+  </script>
+</body>
+</html>

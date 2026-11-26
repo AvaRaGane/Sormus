@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Colmi R12 SpO2 & HR Logger V2.0</title>
+  <title>Colmi R12 SpO2 & HR Logger</title>
   <style>
     body {
       background-color: #0d0d0d;
@@ -60,7 +60,7 @@
   </style>
 </head>
 <body>
-  <h1>Colmi R12 – SpO2 & Syke -yöseuranta v2.0</h1>
+  <h1>Colmi R12 – SpO2 & Syke -yöseuranta</h1>
 
   <div class="card">
     <div id="status">Tila: Ei yhdistetty</div>
@@ -71,8 +71,12 @@
       <input type="number" id="intervalMin" value="2.5" min="1" max="60" step="0.5">
     </div>
 
-    <button id="btnTest" class="secondary" disabled>Mittaa SpO2 + Syke nyt (testi)</button>
-    <button id="btnStart" disabled>2. Aloita automaattinen seuranta</button>
+    <div class="row">
+      <button id="btnTestSpo2" class="secondary" style="margin-bottom:0;" disabled>Mittaa SpO2</button>
+      <button id="btnTestHr" class="secondary" style="margin-bottom:0;" disabled>Mittaa Syke</button>
+    </div>
+
+    <button id="btnStart" disabled>2. Aloita automaattinen seuranta (molemmat)</button>
     <button id="btnStop" class="danger" disabled>Lopeta seuranta</button>
   </div>
 
@@ -104,7 +108,8 @@
     const elStatus = document.getElementById('status');
     const elLog = document.getElementById('log');
     const btnConnect = document.getElementById('btnConnect');
-    const btnTest = document.getElementById('btnTest');
+    const btnTestSpo2 = document.getElementById('btnTestSpo2');
+    const btnTestHr = document.getElementById('btnTestHr');
     const btnStart = document.getElementById('btnStart');
     const btnStop = document.getElementById('btnStop');
 
@@ -166,6 +171,12 @@
 
       // Syke / HR (tyyppi 0x01)
       if (activeMode === 'hr') {
+        // Tulostetaan raakadata 0x6A-paketista tai jos 0x69 sisältää arvoja
+        if (data[0] === 0x6A || (data[0] === 0x69 && (data[2] !== 0 || data[3] !== 0))) {
+          const hex = Array.from(data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+          addLog(`  RAW HR: ${hex}`);
+        }
+
         if (data[0] === 0x6A && data[1] === 0x01) {
           const val = data[2];
           if (val >= 35 && val <= 220) {
@@ -182,6 +193,26 @@
       }
     }
 
+    async function ensureConnected() {
+      if (device && device.gatt.connected) return true;
+      if (!device) return false;
+
+      addLog('Yhteys poikki, yritetään yhdistää uudelleen...');
+      try {
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        writeChar = await service.getCharacteristic(WRITE_UUID);
+        notifyChar = await service.getCharacteristic(NOTIFY_UUID);
+        await notifyChar.startNotifications();
+        notifyChar.addEventListener('characteristicvaluechanged', handleNotification);
+        elStatus.textContent = `Tila: Yhdistetty (${device.name})`;
+        return true;
+      } catch (e) {
+        addLog('Uudelleenyhdistys epäonnistui: ' + e.message);
+        return false;
+      }
+    }
+
     async function connectRing() {
       try {
         elStatus.textContent = 'Tila: Etsitään sormusta...';
@@ -193,7 +224,8 @@
         device.addEventListener('gattserverdisconnected', () => {
           elStatus.textContent = 'Tila: Yhteys katkesi!';
           addLog('Bluetooth-yhteys katkesi.');
-          btnTest.disabled = true;
+          btnTestSpo2.disabled = true;
+          btnTestHr.disabled = true;
         });
 
         const server = await device.gatt.connect();
@@ -206,7 +238,8 @@
 
         elStatus.textContent = `Tila: Yhdistetty (${device.name})`;
         addLog(`Yhdistetty laitteeseen ${device.name}`);
-        btnTest.disabled = false;
+        btnTestSpo2.disabled = false;
+        btnTestHr.disabled = false;
         btnStart.disabled = false;
       } catch (err) {
         elStatus.textContent = 'Tila: Yhdistys epäonnistui';
@@ -214,28 +247,8 @@
       }
     }
 
-    async function measureOnce() {
-      if (!device || !device.gatt.connected) {
-        addLog('Yhteys poikki, yritetään yhdistää uudelleen...');
-        try {
-          const server = await device.gatt.connect();
-          const service = await server.getPrimaryService(SERVICE_UUID);
-          writeChar = await service.getCharacteristic(WRITE_UUID);
-          notifyChar = await service.getCharacteristic(NOTIFY_UUID);
-          await notifyChar.startNotifications();
-          notifyChar.addEventListener('characteristicvaluechanged', handleNotification);
-          elStatus.textContent = `Tila: Yhdistetty (${device.name})`;
-        } catch (e) {
-          addLog('Uudelleenyhdistys epäonnistui: ' + e.message);
-          return;
-        }
-      }
-
-      if (activeMode) return;
+    async function runSpo2() {
       currentSpo2 = [];
-      currentHr = [];
-
-      // 1. SpO2-mittaus (25 s)
       activeMode = 'spo2';
       addLog('Aloitetaan SpO2-mittaus (25 s)...');
       try {
@@ -246,20 +259,44 @@
       } catch (e) {
         addLog('SpO2-mittausvirhe: ' + e.message);
       }
+      activeMode = null;
+    }
 
-      // 2. Sykemittaus (15 s)
+    async function runHr() {
+      currentHr = [];
       activeMode = 'hr';
-      addLog('Aloitetaan sykemittaus (15 s)...');
+      addLog('Aloitetaan sykemittaus (20 s)...');
       try {
         await writeChar.writeValue(makePacket(0x69, [0x01, 0x01]));
-        await new Promise(r => setTimeout(r, 15000));
+        await new Promise(r => setTimeout(r, 20000));
         await writeChar.writeValue(makePacket(0x6A, [0x01, 0x00]));
         await new Promise(r => setTimeout(r, 2000));
       } catch (e) {
         addLog('Sykemittausvirhe: ' + e.message);
       }
-
       activeMode = null;
+    }
+
+    async function measure(mode = 'both') {
+      if (activeMode) {
+        addLog('Mittaus on jo käynnissä.');
+        return;
+      }
+      if (!(await ensureConnected())) return;
+
+      currentSpo2 = [];
+      currentHr = [];
+
+      if (mode === 'spo2' || mode === 'both') {
+        await runSpo2();
+      }
+      if (mode === 'both') {
+        await new Promise(r => setTimeout(r, 2000)); // Tauko anturien vaihdossa
+      }
+      if (mode === 'hr' || mode === 'both') {
+        await runHr();
+      }
+
       const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
       const spo2Med = calcMedian(currentSpo2);
       const hrMed = calcMedian(currentHr);
@@ -268,8 +305,8 @@
         timestamp,
         spo2Med,
         hrMed,
-        spo2Raw: currentSpo2.length ? currentSpo2.join(';') : 'NO_DATA',
-        hrRaw: currentHr.length ? currentHr.join(';') : 'NO_DATA'
+        spo2Raw: currentSpo2.length ? currentSpo2.join(';') : (mode === 'hr' ? '' : 'NO_DATA'),
+        hrRaw: currentHr.length ? currentHr.join(';') : (mode === 'spo2' ? '' : 'NO_DATA')
       });
       localStorage.setItem('colmi_spo2_hr_logs', JSON.stringify(logs));
 
@@ -277,7 +314,8 @@
     }
 
     btnConnect.addEventListener('click', connectRing);
-    btnTest.addEventListener('click', measureOnce);
+    btnTestSpo2.addEventListener('click', () => measure('spo2'));
+    btnTestHr.addEventListener('click', () => measure('hr'));
 
     btnStart.addEventListener('click', async () => {
       const mins = parseFloat(document.getElementById('intervalMin').value) || 2.5;
@@ -285,8 +323,8 @@
       btnStart.disabled = true;
       btnStop.disabled = false;
       addLog(`Automaattinen seuranta käynnistetty (${mins} min välein).`);
-      measureOnce();
-      timerId = setInterval(measureOnce, mins * 60 * 1000);
+      measure('both');
+      timerId = setInterval(() => measure('both'), mins * 60 * 1000);
     });
 
     btnStop.addEventListener('click', () => {
@@ -322,4 +360,4 @@
     addLog(`Valmis. Muistissa ${logs.length} aiempaa mittausta.`);
   </script>
 </body>
-</html>
+  </html>

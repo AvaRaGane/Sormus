@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Colmi R12 SpO2 Logger</title>
+  <title>Colmi R12 SpO2 & HR Logger V2.0</title>
   <style>
     body {
       background-color: #0d0d0d;
@@ -51,7 +51,7 @@
       border: 1px solid #333;
       border-radius: 8px;
       padding: 10px;
-      height: 220px;
+      height: 240px;
       overflow-y: auto;
       font-family: monospace;
       font-size: 0.85rem;
@@ -60,7 +60,7 @@
   </style>
 </head>
 <body>
-  <h1>Colmi R12 – SpO2-yöseuranta</h1>
+  <h1>Colmi R12 – SpO2 & Syke -yöseuranta v2.0</h1>
 
   <div class="card">
     <div id="status">Tila: Ei yhdistetty</div>
@@ -68,10 +68,10 @@
 
     <div class="row">
       <label for="intervalMin">Mittausväli (min):</label>
-      <input type="number" id="intervalMin" value="5" min="1" max="60">
+      <input type="number" id="intervalMin" value="2.5" min="1" max="60" step="0.5">
     </div>
 
-    <button id="btnTest" class="secondary" disabled>Mittaa SpO2 nyt (testi)</button>
+    <button id="btnTest" class="secondary" disabled>Mittaa SpO2 + Syke nyt (testi)</button>
     <button id="btnStart" disabled>2. Aloita automaattinen seuranta</button>
     <button id="btnStop" class="danger" disabled>Lopeta seuranta</button>
   </div>
@@ -95,10 +95,11 @@
     let notifyChar = null;
     let timerId = null;
     let wakeLock = null;
-    let currentReadings = [];
-    let isMeasuring = false;
+    let currentSpo2 = [];
+    let currentHr = [];
+    let activeMode = null; // 'spo2' | 'hr' | null
 
-    let logs = JSON.parse(localStorage.getItem('colmi_spo2_logs') || '[]');
+    let logs = JSON.parse(localStorage.getItem('colmi_spo2_hr_logs') || '[]');
 
     const elStatus = document.getElementById('status');
     const elLog = document.getElementById('log');
@@ -124,6 +125,13 @@
       return pkt;
     }
 
+    function calcMedian(arr) {
+      if (arr.length === 0) return '';
+      const sorted = [...arr].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 !== 0 ? sorted[mid] : ((sorted[mid - 1] + sorted[mid]) / 2).toFixed(1);
+    }
+
     async function requestWakeLock() {
       if ('wakeLock' in navigator) {
         try {
@@ -135,28 +143,44 @@
       }
     }
 
-            function handleNotification(event) {
+    function handleNotification(event) {
       const data = new Uint8Array(event.target.value.buffer);
-      if (!isMeasuring) return;
+      if (!activeMode) return;
 
-      // R12 palauttaa lopputuloksen 0x6A-paketissa (data[2])
-      if (data[0] === 0x6A && data[1] === 0x03) {
-        const val = data[2];
-        if (val >= 50 && val <= 100) {
-          currentReadings.push(val);
-          addLog(`  -> SpO2-tulos: ${val}%`);
+      // SpO2 (tyyppi 0x03)
+      if (activeMode === 'spo2') {
+        if (data[0] === 0x6A && data[1] === 0x03) {
+          const val = data[2];
+          if (val >= 50 && val <= 100) {
+            currentSpo2.push(val);
+            addLog(`  -> SpO2-tulos: ${val}%`);
+          }
+        } else if (data[0] === 0x69 && data[1] === 0x03) {
+          const val = data[3];
+          if (val >= 50 && val <= 100) {
+            currentSpo2.push(val);
+            addLog(`  -> SpO2-lukema: ${val}%`);
+          }
         }
       }
-      // Varalla 0x69-paketti (data[3])
-      else if (data[0] === 0x69 && data[1] === 0x03) {
-        const val = data[3];
-        if (val >= 50 && val <= 100) {
-          currentReadings.push(val);
-          addLog(`  -> Lukema: ${val}%`);
+
+      // Syke / HR (tyyppi 0x01)
+      if (activeMode === 'hr') {
+        if (data[0] === 0x6A && data[1] === 0x01) {
+          const val = data[2];
+          if (val >= 35 && val <= 220) {
+            currentHr.push(val);
+            addLog(`  -> Syke-tulos: ${val} bpm`);
+          }
+        } else if (data[0] === 0x69 && data[1] === 0x01) {
+          const val = data[3];
+          if (val >= 35 && val <= 220) {
+            currentHr.push(val);
+            addLog(`  -> Syke-lukema: ${val} bpm`);
+          }
         }
       }
     }
-
 
     async function connectRing() {
       try {
@@ -207,51 +231,56 @@
         }
       }
 
-      if (isMeasuring) return;
-      isMeasuring = true;
-      currentReadings = [];
-      addLog('Aloitetaan SpO2-mittaus (pidä käsi paikoillaan n. 25 s)...');
+      if (activeMode) return;
+      currentSpo2 = [];
+      currentHr = [];
 
+      // 1. SpO2-mittaus (25 s)
+      activeMode = 'spo2';
+      addLog('Aloitetaan SpO2-mittaus (25 s)...');
       try {
-        // Käynnistä SpO2 (0x69, tyyppi 0x03, start 0x01)
         await writeChar.writeValue(makePacket(0x69, [0x03, 0x01]));
-
-        // Odotetaan 25 sekuntia lukemia
         await new Promise(r => setTimeout(r, 25000));
-
-                // Lopeta SpO2 (0x6A, tyyppi 0x03, 0x00)
         await writeChar.writeValue(makePacket(0x6A, [0x03, 0x00]));
-
-        // Odotetaan 2 s, jotta 0x6A-vastaus ehtii perille
         await new Promise(r => setTimeout(r, 2000));
-
       } catch (e) {
-        addLog('Mittausvirhe: ' + e.message);
+        addLog('SpO2-mittausvirhe: ' + e.message);
       }
 
-      isMeasuring = false;
+      // 2. Sykemittaus (15 s)
+      activeMode = 'hr';
+      addLog('Aloitetaan sykemittaus (15 s)...');
+      try {
+        await writeChar.writeValue(makePacket(0x69, [0x01, 0x01]));
+        await new Promise(r => setTimeout(r, 15000));
+        await writeChar.writeValue(makePacket(0x6A, [0x01, 0x00]));
+        await new Promise(r => setTimeout(r, 2000));
+      } catch (e) {
+        addLog('Sykemittausvirhe: ' + e.message);
+      }
+
+      activeMode = null;
       const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const spo2Med = calcMedian(currentSpo2);
+      const hrMed = calcMedian(currentHr);
 
-      if (currentReadings.length > 0) {
-        const sorted = [...currentReadings].sort((a, b) => a - b);
-        const mid = Math.floor(sorted.length / 2);
-        const median = sorted.length % 2 !== 0 ? sorted[mid] : ((sorted[mid - 1] + sorted[mid]) / 2).toFixed(1);
+      logs.push({
+        timestamp,
+        spo2Med,
+        hrMed,
+        spo2Raw: currentSpo2.length ? currentSpo2.join(';') : 'NO_DATA',
+        hrRaw: currentHr.length ? currentHr.join(';') : 'NO_DATA'
+      });
+      localStorage.setItem('colmi_spo2_hr_logs', JSON.stringify(logs));
 
-        logs.push({ timestamp, median, raw: currentReadings.join(';') });
-        localStorage.setItem('colmi_spo2_logs', JSON.stringify(logs));
-        addLog(`TALLENNETTU: SpO2 mediaani ${median}% (${currentReadings.length} lukemaa)`);
-      } else {
-        logs.push({ timestamp, median: '', raw: 'NO_DATA' });
-        localStorage.setItem('colmi_spo2_logs', JSON.stringify(logs));
-        addLog('Ei kelvollisia SpO2-lukemia tällä kierroksella.');
-      }
+      addLog(`TALLENNETTU: SpO2 ${spo2Med !== '' ? spo2Med + '%' : '-'} | Syke ${hrMed !== '' ? hrMed + ' bpm' : '-'}`);
     }
 
     btnConnect.addEventListener('click', connectRing);
     btnTest.addEventListener('click', measureOnce);
 
     btnStart.addEventListener('click', async () => {
-      const mins = parseInt(document.getElementById('intervalMin').value, 10) || 5;
+      const mins = parseFloat(document.getElementById('intervalMin').value) || 2.5;
       await requestWakeLock();
       btnStart.disabled = true;
       btnStop.disabled = false;
@@ -271,20 +300,20 @@
 
     document.getElementById('btnCsv').addEventListener('click', () => {
       if (logs.length === 0) { alert('Ei tallennettua dataa.'); return; }
-      let csv = 'timestamp,spo2_median,raw_readings\n';
-      logs.forEach(r => { csv += `${r.timestamp},${r.median},${r.raw}\n`; });
+      let csv = 'timestamp,spo2_median,hr_median,spo2_raw,hr_raw\n';
+      logs.forEach(r => { csv += `${r.timestamp},${r.spo2Med},${r.hrMed},${r.spo2Raw},${r.hrRaw}\n`; });
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `colmi_spo2_${new Date().toISOString().slice(0,10)}.csv`;
+      a.download = `colmi_spo2_hr_${new Date().toISOString().slice(0,10)}.csv`;
       a.click();
     });
 
     document.getElementById('btnClear').addEventListener('click', () => {
       if (confirm('Tyhjennetäänkö kaikki tallennetut mittaukset?')) {
         logs = [];
-        localStorage.removeItem('colmi_spo2_logs');
+        localStorage.removeItem('colmi_spo2_hr_logs');
         elLog.textContent = '';
         addLog('Historia tyhjennetty.');
       }

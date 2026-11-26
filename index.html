@@ -60,7 +60,7 @@
   </style>
 </head>
 <body>
-  <h1>Colmi R12 – SpO2 & Syke -yöseuranta v2</h1>
+  <h1>Colmi R12 – SpO2 & Syke -yöseuranta</h1>
 
   <div class="card">
     <div id="status">Tila: Ei yhdistetty</div>
@@ -169,7 +169,7 @@
         }
       }
 
-      // Syke / HR
+      // Syke / HR (tyyppi 0x01)
       if (activeMode === 'hr') {
         const hex = Array.from(data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' ');
         addLog(`  RAW HR: ${hex}`);
@@ -188,6 +188,7 @@
           }
         }
       }
+    }
 
     async function ensureConnected() {
       if (device && device.gatt.connected) return true;
@@ -287,73 +288,4 @@
         await runSpo2();
       }
       if (mode === 'both') {
-        await new Promise(r => setTimeout(r, 2000)); // Tauko anturien vaihdossa
-      }
-      if (mode === 'hr' || mode === 'both') {
-        await runHr();
-      }
-
-      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
-      const spo2Med = calcMedian(currentSpo2);
-      const hrMed = calcMedian(currentHr);
-
-      logs.push({
-        timestamp,
-        spo2Med,
-        hrMed,
-        spo2Raw: currentSpo2.length ? currentSpo2.join(';') : (mode === 'hr' ? '' : 'NO_DATA'),
-        hrRaw: currentHr.length ? currentHr.join(';') : (mode === 'spo2' ? '' : 'NO_DATA')
-      });
-      localStorage.setItem('colmi_spo2_hr_logs', JSON.stringify(logs));
-
-      addLog(`TALLENNETTU: SpO2 ${spo2Med !== '' ? spo2Med + '%' : '-'} | Syke ${hrMed !== '' ? hrMed + ' bpm' : '-'}`);
-    }
-
-    btnConnect.addEventListener('click', connectRing);
-    btnTestSpo2.addEventListener('click', () => measure('spo2'));
-    btnTestHr.addEventListener('click', () => measure('hr'));
-
-    btnStart.addEventListener('click', async () => {
-      const mins = parseFloat(document.getElementById('intervalMin').value) || 2.5;
-      await requestWakeLock();
-      btnStart.disabled = true;
-      btnStop.disabled = false;
-      addLog(`Automaattinen seuranta käynnistetty (${mins} min välein).`);
-      measure('both');
-      timerId = setInterval(() => measure('both'), mins * 60 * 1000);
-    });
-
-    btnStop.addEventListener('click', () => {
-      if (timerId) clearInterval(timerId);
-      timerId = null;
-      if (wakeLock) { wakeLock.release(); wakeLock = null; }
-      btnStart.disabled = false;
-      btnStop.disabled = true;
-      addLog('Seuranta lopetettu.');
-    });
-
-    document.getElementById('btnCsv').addEventListener('click', () => {
-      if (logs.length === 0) { alert('Ei tallennettua dataa.'); return; }
-      let csv = 'timestamp,spo2_median,hr_median,spo2_raw,hr_raw\n';
-      logs.forEach(r => { csv += `${r.timestamp},${r.spo2Med},${r.hrMed},${r.spo2Raw},${r.hrRaw}\n`; });
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `colmi_spo2_hr_${new Date().toISOString().slice(0,10)}.csv`;
-      a.click();
-    });
-
-    document.getElementById('btnClear').addEventListener('click', () => {
-      if (confirm('Tyhjennetäänkö kaikki tallennetut mittaukset?')) {
-        logs = [];
-        localStorage.removeItem('colmi_spo2_hr_logs');
-        elLog.textContent = '';
-        addLog('Historia tyhjennetty.');
-      }
-    });
-
-    addLog(`Valmis. Muistissa ${logs.length} aiempaa mittausta.`);
-  </script>
-</body>
-  </html>
+        await

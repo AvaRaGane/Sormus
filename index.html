@@ -60,7 +60,7 @@
   </style>
 </head>
 <body>
-  <h1>Colmi R12 – SpO2 & Syke -yöseuranta</h1>
+  <h1>Colmi R12 – SpO2 & Syke -yöseuranta v2</h1>
 
   <div class="card">
     <div id="status">Tila: Ei yhdistetty</div>
@@ -164,16 +164,12 @@
           const val = data[3];
           if (val >= 50 && val <= 100) {
             currentSpo2.push(val);
-            addLog(`  -> SpO2-lukema: ${val}%`);
           }
         }
       }
 
       // Syke / HR (tyyppi 0x01)
       if (activeMode === 'hr') {
-        const hex = Array.from(data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        addLog(`  RAW HR: ${hex}`);
-
         if (data[0] === 0x6A && data[1] === 0x01) {
           const val = data[2];
           if (val >= 35 && val <= 220) {
@@ -184,7 +180,6 @@
           const val = data[3];
           if (val >= 35 && val <= 220) {
             currentHr.push(val);
-            addLog(`  -> Syke-lukema: ${val} bpm`);
           }
         }
       }
@@ -341,20 +336,4 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `colmi_spo2_hr_${new Date().toISOString().slice(0,10)}.csv`;
-      a.click();
-    });
-
-    document.getElementById('btnClear').addEventListener('click', () => {
-      if (confirm('Tyhjennetäänkö kaikki tallennetut mittaukset?')) {
-        logs = [];
-        localStorage.removeItem('colmi_spo2_hr_logs');
-        elLog.textContent = '';
-        addLog('Historia tyhjennetty.');
-      }
-    });
-
-    addLog(`Valmis. Muistissa ${logs.length} aiempaa mittausta.`);
-  </script>
-</body>
-</html>
+      a.download =

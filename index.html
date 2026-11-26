@@ -262,10 +262,10 @@
     async function runHr() {
       currentHr = [];
       activeMode = 'hr';
-      addLog('Aloitetaan sykemittaus (20 s)...');
+      addLog('Aloitetaan sykemittaus (30 s)...');
       try {
         await writeChar.writeValue(makePacket(0x69, [0x01, 0x01]));
-        await new Promise(r => setTimeout(r, 20000));
+        await new Promise(r => setTimeout(r, 30000));
         await writeChar.writeValue(makePacket(0x6A, [0x01, 0x00]));
         await new Promise(r => setTimeout(r, 2000));
       } catch (e) {

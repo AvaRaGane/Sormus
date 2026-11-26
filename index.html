@@ -60,7 +60,7 @@
   </style>
 </head>
 <body>
-  <h1>Colmi R12 – SpO2 & Syke -yöseuranta</h1>
+  <h1>Colmi R12 – SpO2 & Syke -yöseuranta v2</h1>
 
   <div class="card">
     <div id="status">Tila: Ei yhdistetty</div>
@@ -173,7 +173,6 @@
       if (activeMode === 'hr') {
         const hex = Array.from(data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' ');
         addLog(`  RAW HR: ${hex}`);
-    }
 
         if (data[0] === 0x6A && data[1] === 0x01) {
           const val = data[2];
@@ -189,7 +188,6 @@
           }
         }
       }
-    }
 
     async function ensureConnected() {
       if (device && device.gatt.connected) return true;

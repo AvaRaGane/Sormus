@@ -169,13 +169,11 @@
         }
       }
 
-      // Syke / HR (tyyppi 0x01)
+      // Syke / HR
       if (activeMode === 'hr') {
-        // Tulostetaan raakadata 0x6A-paketista tai jos 0x69 sisältää arvoja
-        if (data[0] === 0x6A || (data[0] === 0x69 && (data[2] !== 0 || data[3] !== 0))) {
-          const hex = Array.from(data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-          addLog(`  RAW HR: ${hex}`);
-        }
+        const hex = Array.from(data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        addLog(`  RAW HR: ${hex}`);
+    }
 
         if (data[0] === 0x6A && data[1] === 0x01) {
           const val = data[2];

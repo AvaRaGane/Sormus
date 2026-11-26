@@ -60,7 +60,7 @@
   </style>
 </head>
 <body>
-  <h1>Colmi R12 – SpO2 & Syke -yöseuranta v2</h1>
+  <h1>Colmi R12 – SpO2 & Syke -yöseuranta</h1>
 
   <div class="card">
     <div id="status">Tila: Ei yhdistetty</div>
@@ -336,4 +336,20 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download =
+      a.download = `colmi_spo2_hr_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+    });
+
+    document.getElementById('btnClear').addEventListener('click', () => {
+      if (confirm('Tyhjennetäänkö kaikki tallennetut mittaukset?')) {
+        logs = [];
+        localStorage.removeItem('colmi_spo2_hr_logs');
+        elLog.textContent = '';
+        addLog('Historia tyhjennetty.');
+      }
+    });
+
+    addLog(`Valmis. Muistissa ${logs.length} aiempaa mittausta.`);
+  </script>
+</body>
+</html>
